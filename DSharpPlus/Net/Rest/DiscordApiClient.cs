@@ -6407,6 +6407,7 @@ public sealed class DiscordApiClient
         RestResponse res = await this.rest.ExecuteRequestAsync(request);
         DiscordEmoji emoji = JsonConvert.DeserializeObject<DiscordEmoji>(res.Response!)!;
         emoji.Discord = this.discord!;
+        emoji.User.Discord = this.discord;
 
         return emoji;
     }
