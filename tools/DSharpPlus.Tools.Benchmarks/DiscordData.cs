@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace DSharpPlus.Tools.Benchmarks;
 
-public sealed class DiscordData
+public static class DiscordData
 {
     public static bool IsConnected => Client is not null && Client.AllShardsConnected;
     public static IServiceProvider ServiceProvider { get; private set; } = null!;

@@ -17,13 +17,13 @@ public class TextCommandExecutionBenchmarks
 {
     private static readonly DiscordMessage message = DiscordJson.ToDiscordObject<DiscordMessage>(JToken.Parse("""{"type":0,"tts":false,"timestamp":"2024-10-02T01:04:48.604-05:00","pinned":false,"nonce":"1290917384118337536","mentions":[],"mention_roles":[],"mention_everyone":false,"member":{"roles":["402444174223343617","1252238597004853379","573612339924959270","379397810476417064","973818122211590154","1204470581274353674","750044518849445909","1059190345688158358","1057954598683414619","1163786594138992670"],"premium_since":null,"pending":false,"nick":null,"mute":false,"joined_at":"2024-09-26T23:50:07.584-05:00","flags":11,"deaf":false,"communication_disabled_until":null,"banner":null,"avatar":null},"id":"1290917384726515742","flags":0,"embeds":[],"edited_timestamp":null,"content":"!enum Monday","components":[],"channel_id":"379379415475552276","author":{"username":"oolunar","public_flags":4194560,"id":"336733686529654798","global_name":"Lunar","discriminator":"0","clan":{"tag":"Moon","identity_guild_id":"832354798153236510","identity_enabled":true,"badge":"f09dccb8074d3c1a3bccadff9ceee10b"},"avatar_decoration_data":null,"avatar":"cb52688afd66f14e8a433396cd84c7c7"},"attachments":[],"guild_id":"379378609942560770"}"""));
     private static MessageCreatedEventArgs notFoundCommand;
-    private static MessageCreatedEventArgs commandNoArgs;
-    private static MessageCreatedEventArgs commandOneArgs;
-    private static MessageCreatedEventArgs commandTwoArgs;
-    private static MessageCreatedEventArgs commandThreeArgs;
-    private static MessageCreatedEventArgs commandFourArgs;
-    private static MessageCreatedEventArgs commandFiveArgs;
-    private static MessageCreatedEventArgs commandSixArgs;
+    private static MessageCreatedEventArgs command0Args;
+    private static MessageCreatedEventArgs command1Args;
+    private static MessageCreatedEventArgs command2Args;
+    private static MessageCreatedEventArgs command3Args;
+    private static MessageCreatedEventArgs command4Args;
+    private static MessageCreatedEventArgs command5Args;
+    private static MessageCreatedEventArgs command6Args;
 
     [GlobalSetup]
     public void Setup()
@@ -33,13 +33,13 @@ public class TextCommandExecutionBenchmarks
         if (!isConnected)
         {
             notFoundCommand = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!not found", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandNoArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!none", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandOneArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!one 1", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandTwoArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!two 1 2", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandThreeArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!three 1 2 3", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandFourArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!four 1 2 3 4", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandFiveArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!five 1 2 3 4 5", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
-            commandSixArgs = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!six 1 2 3 4 5 6", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command0Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!none", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command1Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!one 1", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command2Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!two 1 2", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command3Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!three 1 2 3", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command4Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!four 1 2 3 4", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command5Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!five 1 2 3 4 5", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
+            command6Args = TextCommandUtilities.CreateFakeMessageEventArgsAsync(message, "!six 1 2 3 4 5 6", DiscordData.Client, DiscordData.Client.CurrentUser, DiscordData.Channel, DiscordData.Guild).GetAwaiter().GetResult();
         }
     }
 
@@ -47,25 +47,25 @@ public class TextCommandExecutionBenchmarks
     public async ValueTask CommandNotFoundAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, notFoundCommand);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandNoArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandNoArgs);
+    public async ValueTask Command0ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command0Args);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandOneArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandOneArgs);
+    public async ValueTask Command1ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command1Args);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandTwoArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandTwoArgs);
+    public async ValueTask Command2ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command2Args);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandThreeArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandThreeArgs);
+    public async ValueTask Command3ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command3Args);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandFourArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandFourArgs);
+    public async ValueTask Command4ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command4Args);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandFiveArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandFiveArgs);
+    public async ValueTask Command5ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command5Args);
 
     [Benchmark, ArgumentsSource(nameof(GetDiscordClient))]
-    public async ValueTask CommandSixArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, commandSixArgs);
+    public async ValueTask Command6ArgsAsync(DiscordClient client) => await DiscordData.TextCommandProcessor.ExecuteTextCommandAsync(client, command6Args);
 
     public IEnumerable<object> GetDiscordClient()
     {

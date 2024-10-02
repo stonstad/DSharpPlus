@@ -19,7 +19,5 @@ public class InteractionCommandExecutionBenchmarks
         Setup();
 
         yield return DiscordData.Client;
-        yield return DiscordData.Client;
-        yield return DiscordData.Client;
     }
 }
