@@ -1,3 +1,5 @@
+#if ALLOW_UNSAFE_CODE
+
 #pragma warning disable CS0659, CS0661, IDE0040
 
 using System.Runtime.CompilerServices;
@@ -47,3 +49,4 @@ internal partial struct ZstdInterop
     // exists purely to put a name on the relevant parameters
     internal struct ZstdStream;
 }
+#endif

@@ -1,3 +1,5 @@
+#if ALLOW_UNSAFE_CODE
+
 using System;
 using System.Runtime.InteropServices;
 
@@ -41,3 +43,4 @@ internal static partial class Ed25519
         internal static unsafe partial int crypto_sign_ed25519_verify_detached(byte* signature, byte* message, ulong messageLength, byte* publicKey);
     }
 }
+#endif

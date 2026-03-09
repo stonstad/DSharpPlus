@@ -1,3 +1,5 @@
+#if ALLOW_UNSAFE_CODE
+
 using System;
 
 using CommunityToolkit.HighPerformance;
@@ -78,3 +80,4 @@ public sealed class ZstdDecompressor : IPayloadDecompressor
         }
     }
 }
+#endif

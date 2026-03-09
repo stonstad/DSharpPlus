@@ -3,7 +3,9 @@ using System.Linq;
 using DSharpPlus.Clients;
 using DSharpPlus.Net.Gateway.Compression;
 using DSharpPlus.Net.Gateway.Compression.Zlib;
+#if ALLOW_UNSAFE_CODE
 using DSharpPlus.Net.Gateway.Compression.Zstd;
+#endif
 
 using Microsoft.Extensions.DependencyInjection;
 
@@ -64,6 +66,8 @@ public static partial class ServiceCollectionExtensions
     public static IServiceCollection UseZlibCompression(this IServiceCollection services)
         => services.Replace<IPayloadDecompressor, ZlibStreamDecompressor>();
 
+#if ALLOW_UNSAFE_CODE
+
     /// <summary>
     /// Forces DSharpPlus to use zstd compression for the gateway.
     /// </summary>
@@ -71,6 +75,8 @@ public static partial class ServiceCollectionExtensions
     /// <returns>The current instance for chaining.</returns>
     public static IServiceCollection UseZstdCompression(this IServiceCollection services)
         => services.Replace<IPayloadDecompressor, ZstdDecompressor>();
+
+#endif
 
     /// <summary>
     /// Forces DSharpPlus to disable gateway compression entirely.

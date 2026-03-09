@@ -1,3 +1,4 @@
+#if ALLOW_UNSAFE_CODE
 #pragma warning disable CS0659, CS0661
 
 using System;
@@ -110,3 +111,4 @@ static file class ThrowHelper
     public static int ThrowZstdInvalidHeader()
         => throw new InvalidCastException($"Encountered an invalid ZSTD frame header.");
 }
+#endif

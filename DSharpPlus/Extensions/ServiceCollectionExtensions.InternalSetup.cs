@@ -1,9 +1,6 @@
 using System;
-using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Channels;
-
 using DSharpPlus.Clients;
 using DSharpPlus.Net;
 using DSharpPlus.Net.Abstractions;
@@ -12,7 +9,11 @@ using DSharpPlus.Net.InboundWebhooks;
 using DSharpPlus.Net.InboundWebhooks.Transport;
 using DSharpPlus.Net.Gateway.Compression;
 using DSharpPlus.Net.Gateway.Compression.Zlib;
+#if ALLOW_UNSAFE_CODE
+using System.Reflection;
+using System.Runtime.InteropServices;
 using DSharpPlus.Net.Gateway.Compression.Zstd;
+#endif
 
 using Microsoft.Extensions.DependencyInjection;
 
@@ -104,6 +105,7 @@ public static partial class ServiceCollectionExtensions
 
     private static IServiceCollection RegisterBestDecompressor(this IServiceCollection services)
     {
+#if ALLOW_UNSAFE_CODE
         if (NativeLibrary.TryLoad("libzstd", Assembly.GetEntryAssembly(), default, out _))
         {
             services.AddTransient<IPayloadDecompressor, ZstdDecompressor>();
@@ -112,6 +114,9 @@ public static partial class ServiceCollectionExtensions
         {
             services.AddTransient<IPayloadDecompressor, ZlibStreamDecompressor>();
         }
+#else
+        services.AddTransient<IPayloadDecompressor, ZlibStreamDecompressor>();
+#endif
 
         return services;
     }

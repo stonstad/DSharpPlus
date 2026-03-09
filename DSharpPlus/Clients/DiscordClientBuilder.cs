@@ -8,7 +8,9 @@ using DSharpPlus.Net;
 using DSharpPlus.Net.Gateway;
 using DSharpPlus.Net.Gateway.Compression;
 using DSharpPlus.Net.Gateway.Compression.Zlib;
+#if ALLOW_UNSAFE_CODE
 using DSharpPlus.Net.Gateway.Compression.Zstd;
+#endif
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -98,6 +100,8 @@ public sealed class DiscordClientBuilder
         return builder;
     }
 
+    #if ALLOW_UNSAFE_CODE
+
     /// <summary>
     /// Sets the gateway compression used to zstd. This requires zstd natives to be available to the application.
     /// </summary>
@@ -107,6 +111,8 @@ public sealed class DiscordClientBuilder
         this.serviceCollection.Replace<IPayloadDecompressor, ZstdDecompressor>();
         return this;
     }
+
+#endif
 
     /// <summary>
     /// Sets the gateway compression used to zlib. This is the default compression mode.

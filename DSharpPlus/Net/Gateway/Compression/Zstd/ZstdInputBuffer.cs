@@ -1,3 +1,5 @@
+#if ALLOW_UNSAFE_CODE
+
 namespace DSharpPlus.Net.Gateway.Compression.Zstd;
 
 /// <summary>
@@ -9,3 +11,5 @@ internal unsafe struct ZstdInputBuffer
     internal nuint size; // size_t size
     internal nuint position; // size_t pos
 }
+
+#endif
