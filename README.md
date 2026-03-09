@@ -3,7 +3,7 @@ This fork of DSharpPlus removes unsafe code execution from the library.
 The following changes are implemented:
 - Removes unsafe buffers used during Zstd payload decompression.
 - Removes references to third-party C libaries libzstd and sodium.
-- Added overflow check for receive message maximum payload size (32 kb).
+- Added overflow check for received messages. The maximum payload size (32 kb).
 
 # DSharpPlus
 
