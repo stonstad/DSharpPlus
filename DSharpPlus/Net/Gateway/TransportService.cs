@@ -30,6 +30,8 @@ internal sealed class TransportService : ITransportService
     private bool isConnected = false;
     private bool isDisposed = false;
 
+    private const int MaxReceiveBufferSizeBytes = 1024 * 32; // 32 kb
+
     public TransportService
     (
         ILoggerFactory factory,
@@ -152,6 +154,11 @@ internal sealed class TransportService : ITransportService
                 receiveResult = await this.socket.ReceiveAsync(this.writer.GetMemory(), CancellationToken.None);
 
                 this.writer.Advance(receiveResult.Count);
+
+                if (this.writer.WrittenCount > MaxReceiveBufferSizeBytes)
+                {
+                    return new(new OverflowException($"Maximum payload size ({MaxReceiveBufferSizeBytes} bytes) exceeded. Received ({this.writer.WrittenCount} bytes."));
+                }
 
             } while (!receiveResult.EndOfMessage);
         }
