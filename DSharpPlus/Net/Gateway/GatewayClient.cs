@@ -616,21 +616,37 @@ public sealed class GatewayClient : IGatewayClient
         }
         else if (frame.TryGetStreamMessage(out MemoryStream? streamMessage))
         {
-            using StreamReader reader = new(streamMessage);
-            using JsonReader jsonReader = new JsonTextReader(reader);
-
-            JsonSerializer serializer = new();
-            payload = serializer.Deserialize<GatewayPayload>(jsonReader);
-
-            if (payload is null)
+            byte[] bytes = streamMessage.ToArray();
+            var utf8 = new UTF8Encoding(false, throwOnInvalidBytes: true);
+            
+            string utf8ValidatedString = null;
+            try
             {
-                this.logger.LogError
-                (
-                    "Received invalid inbound event: {Data}",
-                    Encoding.UTF8.GetString(streamMessage.ToArray())
-                );
-
+                utf8ValidatedString = utf8.GetString(bytes);
+            }
+            catch (DecoderFallbackException ex)
+            {
+                this.logger.LogError("Received invalid inbound event: {Data}", Encoding.UTF8.GetString(streamMessage.ToArray()));
                 return null;
+            }
+
+            //using StreamReader reader = new(streamMessage);
+            using StringReader reader = new StringReader(utf8ValidatedString);
+            using JsonReader jsonReader = new JsonTextReader(reader);
+            {
+                JsonSerializer serializer = new();
+                payload = serializer.Deserialize<GatewayPayload>(jsonReader);
+
+                if (payload is null)
+                {
+                    this.logger.LogError
+                    (
+                        "Received invalid inbound event: {Data}",
+                        Encoding.UTF8.GetString(streamMessage.ToArray())
+                    );
+
+                    return null;
+                }
             }
         }
         else

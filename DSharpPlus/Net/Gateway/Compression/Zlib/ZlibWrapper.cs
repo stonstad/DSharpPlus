@@ -62,8 +62,23 @@ internal readonly struct ZlibWrapper : IDisposable, IEquatable<ZlibWrapper>
 
     public void Dispose()
     {
-        this.stream.Dispose();
-        this.underlying.Dispose();
+        try
+        {
+            if (this.stream != null)
+                this.stream.Dispose();
+        }
+        catch
+        {
+
+        }
+        try
+        {
+            if (this.underlying != null)
+                this.underlying.Dispose();
+        }
+        catch
+        {
+        }
     }
 
     public override bool Equals(object? obj) => obj is ZlibWrapper wrapper && Equals(wrapper);
