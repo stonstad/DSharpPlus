@@ -30,8 +30,6 @@ internal sealed class TransportService : ITransportService
     private bool isConnected = false;
     private bool isDisposed = false;
 
-    private const int MaxReceiveBufferSizeBytes = 1024 * 32; // 32 kb
-
     public TransportService
     (
         ILoggerFactory factory,
@@ -106,7 +104,8 @@ internal sealed class TransportService : ITransportService
                     this.socket.State.ToString()
                 );
 
-                return;
+                // still dispose the socket and reset the decompressor; a cancelled read leaves the socket aborted
+                break;
 
             case WebSocketState.Open:
             case WebSocketState.Connecting:
@@ -133,7 +132,7 @@ internal sealed class TransportService : ITransportService
     }
 
     /// <inheritdoc/>
-    public async ValueTask<TransportFrame> ReadAsync()
+    public async ValueTask<TransportFrame> ReadAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(this.isDisposed, this);
 
@@ -151,21 +150,29 @@ internal sealed class TransportService : ITransportService
         {
             do
             {
-                receiveResult = await this.socket.ReceiveAsync(this.writer.GetMemory(), CancellationToken.None);
+                receiveResult = await this.socket.ReceiveAsync(this.writer.GetMemory(), ct);
 
                 this.writer.Advance(receiveResult.Count);
 
-                if (this.writer.WrittenCount > MaxReceiveBufferSizeBytes)
-                {
-                    return new(new OverflowException($"Maximum payload size ({MaxReceiveBufferSizeBytes} bytes) exceeded. Received ({this.writer.WrittenCount} bytes."));
-                }
-
             } while (!receiveResult.EndOfMessage);
         }
-        catch (OperationCanceledException) { }
+        // the gateway client stopped this read to replace the connection
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             return new(ex);
+        }
+
+        // a close frame, or the connection ended without one
+        if (this.writer.WrittenCount == 0)
+        {
+            if (this.socket.CloseStatus is WebSocketCloseStatus closeStatus)
+                return new((int)closeStatus);
+
+            return new((int)WebSocketCloseStatus.Empty);
         }
 
         if (!this.decompressor.TryDecompress(this.writer.WrittenSpan, this.decompressedWriter))
@@ -177,11 +184,7 @@ internal sealed class TransportService : ITransportService
         {
             string result = Encoding.UTF8.GetString(this.decompressedWriter.WrittenSpan);
 
-            this.logger.LogTrace
-            (
-                "Length for the last inbound gateway event: {length}",
-                this.writer.WrittenCount != 0 ? this.writer.WrittenCount : $"closed: {(int)this.socket.CloseStatus!}"
-            );
+            this.logger.LogTrace("Length for the last inbound gateway event: {length}", this.writer.WrittenCount);
 
             string anonymized = result;
 
@@ -197,17 +200,17 @@ internal sealed class TransportService : ITransportService
 
             this.logger.LogTrace("Payload for the last inbound gateway event: {event}", anonymized);
 
-            return this.writer.WrittenCount == 0 ? new((int)this.socket.CloseStatus!) : new(result);
+            return new(result);
         }
         else if (this.streamingDeserialization)
         {
             MemoryStream result = new(this.decompressedWriter.WrittenSpan.ToArray());
-            return this.writer.WrittenCount == 0 ? new((int)this.socket.CloseStatus!) : new(result);
+            return new(result);
         }
         else
         {
             string result = Encoding.UTF8.GetString(this.decompressedWriter.WrittenSpan);
-            return this.writer.WrittenCount == 0 ? new((int)this.socket.CloseStatus!) : new(result);
+            return new(result);
         }
     }
 

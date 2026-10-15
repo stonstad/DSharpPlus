@@ -12,6 +12,9 @@ namespace DSharpPlus.Net.Gateway.Compression.Zlib;
 /// </summary>
 public sealed class ZlibStreamDecompressor : IPayloadDecompressor
 {
+    // the gateway read loop decompresses while a reconnect on another task resets the stream; disposing
+    // the stream mid-inflate frees zlib's native state under it and crashes the process (0xC0000005)
+    private readonly object syncRoot = new();
     private ZlibWrapper wrapper = new();
 
     /// <inheritdoc/>
@@ -23,39 +26,55 @@ public sealed class ZlibStreamDecompressor : IPayloadDecompressor
     /// <inheritdoc/>
     public bool TryDecompress(ReadOnlySpan<byte> compressed, ArrayPoolBufferWriter<byte> decompressed)
     {
-        if (!this.wrapper.TryInflate(compressed, decompressed))
+        lock (this.syncRoot)
         {
-            decompressed.Clear();
-            decompressed.Write(compressed);
-        }
+            // reset by a reconnect, so this frame belongs to the closed connection
+            if (this.wrapper == default)
+                return false;
 
-        return true;
+            if (!this.wrapper.TryInflate(compressed, decompressed))
+            {
+                decompressed.Clear();
+                decompressed.Write(compressed);
+            }
+
+            return true;
+        }
     }
 
     /// <inheritdoc/>
     public void Dispose()
     {
-        if (this.wrapper != default)
+        lock (this.syncRoot)
         {
-            this.wrapper.Dispose();    
+            if (this.wrapper != default)
+            {
+                this.wrapper.Dispose();
+            }
         }
     }
 
     /// <inheritdoc/>
     public void Reset()
     {
-        this.wrapper.Dispose();
-        this.wrapper = default;
+        lock (this.syncRoot)
+        {
+            this.wrapper.Dispose();
+            this.wrapper = default;
+        }
     }
 
     /// <inheritdoc/>
     public void Initialize()
     {
-        if (this.wrapper != default)
+        lock (this.syncRoot)
         {
-            Reset();
-        }
+            if (this.wrapper != default)
+            {
+                Reset();
+            }
 
-        this.wrapper = new();
+            this.wrapper = new();
+        }
     }
 }

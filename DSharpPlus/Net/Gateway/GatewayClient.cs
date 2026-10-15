@@ -52,6 +52,13 @@ public sealed class GatewayClient : IGatewayClient
     private CancellationTokenSource gatewayTokenSource;
     private bool closureRequested = false;
 
+    // the transport isn't thread-safe: the read loop holds this while it reads, and connecting, reconnecting,
+    // resuming and disconnecting hold it while they replace the connection
+    private readonly SemaphoreSlim transportLock = new(1, 1);
+
+    // guards stopping and replacing gatewayTokenSource, whose token identifies the current connection
+    private readonly object connectionLock = new();
+
     /// <inheritdoc/>
     public bool IsConnected { get; private set; }
 
@@ -107,32 +114,51 @@ public sealed class GatewayClient : IGatewayClient
         this.shardInfo = shardInfo;
         this.reconnectUrl = url;
 
+        // stops a read in progress, so a previous connection's read loop lets go of the transport
+        StopConnection();
+
+        await this.transportLock.WaitAsync();
+
+        try
+        {
+            await ConnectCoreAsync(url, activity, status, idleSince, shardInfo);
+        }
+        finally
+        {
+            this.transportLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Connects and identifies, retrying until it succeeds or the client is disconnected. The caller holds the
+    /// transport lock.
+    /// </summary>
+    private async Task ConnectCoreAsync
+    (
+        string url,
+        DiscordActivity? activity,
+        DiscordUserStatus? status,
+        DateTimeOffset? idleSince,
+        ShardInfo? shardInfo
+    )
+    {
         for (uint i = 0; i < this.options.MaxReconnects; i++)
         {
+            CancellationToken ct = StartConnection();
+
             try
             {
-                this.gatewayTokenSource = new();
+                // a failed attempt can leave its socket open
+                await this.transportService.DisconnectAsync(WebSocketCloseStatus.NormalClosure);
                 await this.transportService.ConnectAsync(url, shardInfo?.ShardId);
 
-                TransportFrame initialFrame = await this.transportService.ReadAsync();
-                GatewayPayload? helloEvent = await ProcessAndDeserializeTransportFrameAsync(initialFrame);
-
-                if (helloEvent is not { OpCode: GatewayOpCode.Hello })
-                {
-                    this.logger.LogWarning("Expected HELLO payload from Discord");
-                    continue;
-                }
-
-                GatewayHello helloPayload = ((JObject)helloEvent.Data).ToDiscordObject<GatewayHello>();
+                GatewayHello helloPayload = await ReadHelloAsync(ct);
 
                 this.logger.LogDebug
                 (
                     "Received hello event, starting heartbeating with an interval of {interval} and identifying.",
                     TimeSpan.FromMilliseconds(helloPayload.HeartbeatInterval)
                 );
-
-                _ = HeartbeatAsync(helloPayload.HeartbeatInterval, this.gatewayTokenSource.Token);
-                _ = HandleEventsAsync(this.gatewayTokenSource.Token);
 
                 StatusUpdate? statusUpdate;
 
@@ -180,14 +206,20 @@ public sealed class GatewayClient : IGatewayClient
 
                 await WriteAsync(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(identify)));
 
+                // the read loop waits for the transport lock, so it starts reading once the caller lets go of it
+                _ = HeartbeatAsync(helloPayload.HeartbeatInterval, ct);
+                _ = HandleEventsAsync(ct);
+
                 this.logger.LogDebug("Identified with the Discord gateway");
-                break;
+                return;
             }
             catch (Exception e)
             {
                 this.logger.LogError(exception: e, "Encountered an error while connecting.");
-                await Task.Delay(this.options.GetReconnectionDelay(i));
-                continue;
+
+                // disconnected, or a manual reconnect took over
+                if (!await TryDelayAsync(this.options.GetReconnectionDelay(i), ct))
+                    return;
             }
         }
     }
@@ -197,8 +229,23 @@ public sealed class GatewayClient : IGatewayClient
     {
         this.closureRequested = true;
         this.IsConnected = false;
-        this.gatewayTokenSource.Cancel();
-        await this.transportService.DisconnectAsync(WebSocketCloseStatus.NormalClosure);
+
+        // stops a read in progress, so the read loop lets go of the transport, and ends a reconnect's retries
+        StopConnection();
+
+        await this.transportLock.WaitAsync();
+
+        try
+        {
+            // a reconnect that was mid-attempt may have started a new connection meanwhile
+            StopConnection();
+
+            await this.transportService.DisconnectAsync(WebSocketCloseStatus.NormalClosure);
+        }
+        finally
+        {
+            this.transportLock.Release();
+        }
     }
 
     /// <inheritdoc/>
@@ -242,6 +289,9 @@ public sealed class GatewayClient : IGatewayClient
     /// </summary>
     private async Task HeartbeatAsync(int heartbeatInterval, CancellationToken ct)
     {
+        // left over from the connection this one replaced, which may have zombied
+        this.pendingHeartbeats = 0;
+
         double jitter = Random.Shared.NextDouble() * 0.95;
 
         await Task.Delay((int)(heartbeatInterval * jitter), ct);
@@ -260,13 +310,18 @@ public sealed class GatewayClient : IGatewayClient
                 if (this.pendingHeartbeats > 5)
                 {
                     _ = this.controller.ZombiedAsync(this);
+
+                    this.logger.LogWarning("Discord stopped acknowledging heartbeats, reconnecting.");
+
+                    await TryReconnectAsync(ct);
+                    return;
                 }
             }
             catch (WebSocketException e)
             {
                 this.logger.LogWarning("The connection died or entered an invalid state, reconnecting. Exception: {ExceptionMessage}", e.Message);
-                
-                await ReconnectAsync();
+
+                await TryReconnectAsync(ct);
                 return;
             }
             catch (Exception e)
@@ -286,8 +341,20 @@ public sealed class GatewayClient : IGatewayClient
         {
             while (!ct.IsCancellationRequested)
             {
-                TransportFrame frame = await this.transportService.ReadAsync();
-                GatewayPayload? payload = await ProcessAndDeserializeTransportFrameAsync(frame);
+                TransportFrame frame;
+
+                await this.transportLock.WaitAsync(ct);
+
+                try
+                {
+                    frame = await this.transportService.ReadAsync(ct);
+                }
+                finally
+                {
+                    this.transportLock.Release();
+                }
+
+                GatewayPayload? payload = await ProcessAndDeserializeTransportFrameAsync(frame, ct);
 
                 if (payload is null)
                 {
@@ -350,7 +417,12 @@ public sealed class GatewayClient : IGatewayClient
                     case GatewayOpCode.InvalidSession:
 
                         this.logger.LogDebug("Received INVALID_SESSION, resumable: {Resumable}", (bool)payload.Data);
-                        bool success = (bool)payload.Data ? await TryResumeAsync() : await TryReconnectAsync();
+                        bool success;
+
+                        if ((bool)payload.Data)
+                            success = await TryResumeAsync(ct);
+                        else
+                            success = await TryReconnectAsync(ct);
 
                         if (!success)
                         {
@@ -365,7 +437,7 @@ public sealed class GatewayClient : IGatewayClient
                         this.logger.LogDebug("Received RECONNECT");
                         _ = this.controller.ReconnectRequestedAsync(this);
 
-                        if (!(this.options.AutoReconnect && await TryReconnectAsync()))
+                        if (!(this.options.AutoReconnect && await TryReconnectAsync(ct)))
                         {
                             this.logger.LogError("A reconnection attempt requested by Discord failed.");
                             _ = this.controller.ReconnectFailedAsync(this);
@@ -380,9 +452,17 @@ public sealed class GatewayClient : IGatewayClient
                 }
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // a reconnect or disconnect stopped this connection
+        }
         catch (Exception e)
         {
-            this.logger.LogError(e, "An exception occurred in event handling.");
+            this.logger.LogError(e, "An exception occurred in event handling, reconnecting.");
+
+            // otherwise nothing reads from the gateway again
+            if (this.options.AutoReconnect)
+                await TryReconnectAsync(ct);
         }
 
 #pragma warning disable IDE0046
@@ -419,17 +499,24 @@ public sealed class GatewayClient : IGatewayClient
     /// <summary>
     /// Attempts to resume a connection, returning whether this was successful.
     /// </summary>
-    private async Task<bool> TryResumeAsync()
+    /// <param name="requester">The token of the connection to resume, whose read loop and heartbeat carry on.</param>
+    private async Task<bool> TryResumeAsync(CancellationToken requester)
     {
         if (this.resumeUrl is null || this.sessionId is null)
         {
-            return this.options.AutoReconnect && await TryReconnectAsync();
+            return this.options.AutoReconnect && await TryReconnectAsync(requester);
         }
 
         _ = this.controller.ResumeAttemptedAsync(this);
 
+        await this.transportLock.WaitAsync();
+
         try
         {
+            // a reconnect or disconnect already stopped this connection
+            if (requester.IsCancellationRequested)
+                return true;
+
             for (uint i = 0; i < this.options.MaxReconnects; i++)
             {
                 this.logger.LogTrace("Attempting resume, attempt {Attempt}", i + 1);
@@ -471,7 +558,10 @@ public sealed class GatewayClient : IGatewayClient
 
                     this.logger.LogWarning("Internet connection interrupted, waiting for {Delay}", delay);
 
-                    await Task.Delay(delay);
+                    // a reconnect or disconnect took over
+                    if (!await TryDelayAsync(delay, requester))
+                        return true;
+
                     continue;
                 }
                 catch
@@ -479,54 +569,69 @@ public sealed class GatewayClient : IGatewayClient
                     throw;
                 }
             }
+
+            return true;
         }
         catch (Exception e)
         {
             this.logger.LogError(e, "Failed to resume an existing gateway session.");
-            return this.options.AutoReconnect && await TryReconnectAsync();
+        }
+        finally
+        {
+            this.transportLock.Release();
         }
 
-        return true;
+        // reconnecting takes the transport lock itself, so this waits until the resume has let go of it
+        return this.options.AutoReconnect && await TryReconnectAsync(requester);
     }
 
     /// <summary>
     /// Attempts to reconnect to the gateway, returning whether this was successful.
     /// </summary>
-    private async Task<bool> TryReconnectAsync()
+    /// <param name="requester">The token of the connection to replace. If a reconnect or disconnect already stopped
+    /// it, there's nothing left to do.</param>
+    private async Task<bool> TryReconnectAsync(CancellationToken requester)
+    {
+        if (!TryStopConnection(requester))
+            return true;
+
+        await this.transportLock.WaitAsync();
+
+        try
+        {
+            // disconnected, or a manual reconnect replaced the connection, while this waited for the transport
+            if (this.closureRequested || !IsCurrentConnection(requester))
+                return true;
+
+            return await ReconnectCoreAsync();
+        }
+        finally
+        {
+            this.transportLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Replaces the connection and identifies again, retrying until it succeeds. The caller holds the transport lock.
+    /// </summary>
+    private async Task<bool> ReconnectCoreAsync()
     {
         for (uint i = 0; i < this.options.MaxReconnects; i++)
         {
             this.logger.LogTrace("Attempting reconnect, attempt {Attempt}", i + 1);
 
+            CancellationToken ct = StartConnection();
+
             try
             {
                 this.IsConnected = false;
-
-                try
-                {
-                    this.gatewayTokenSource.Cancel();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // thrown if gatewayTokenSource was disposed when cancelling, ignore since we create a new one anyway
-                }
-
-                this.gatewayTokenSource = new();
 
                 // ensure we're disconnected no matter what the previous state was
                 await this.transportService.DisconnectAsync(WebSocketCloseStatus.NormalClosure);
 
                 await this.transportService.ConnectAsync(this.reconnectUrl!, this.shardInfo?.ShardId);
 
-                TransportFrame initialFrame = await this.transportService.ReadAsync();
-                GatewayPayload? helloEvent = await ProcessAndDeserializeTransportFrameAsync(initialFrame);
-
-                if (helloEvent is not { OpCode: GatewayOpCode.Hello })
-                {
-                    throw new InvalidDataException($"Expected HELLO payload from Discord");
-                }
-
-                GatewayHello helloPayload = ((JObject)helloEvent.Data).ToDiscordObject<GatewayHello>();
+                GatewayHello helloPayload = await ReadHelloAsync(ct);
 
                 this.logger.LogDebug
                 (
@@ -535,10 +640,12 @@ public sealed class GatewayClient : IGatewayClient
                 );
 
                 this.IsConnected = true;
-                _ = HeartbeatAsync(helloPayload.HeartbeatInterval, this.gatewayTokenSource.Token);
-                _ = HandleEventsAsync(this.gatewayTokenSource.Token);
 
                 await WriteAsync(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(this.identify)));
+
+                // the read loop waits for the transport lock, so it starts reading once the caller lets go of it
+                _ = HeartbeatAsync(helloPayload.HeartbeatInterval, ct);
+                _ = HandleEventsAsync(ct);
 
                 this.logger.LogDebug("Identified with the Discord gateway");
                 return true;
@@ -549,15 +656,108 @@ public sealed class GatewayClient : IGatewayClient
 
                 this.logger.LogError(e, "Reconnecting failed, waiting for {Delay}", delay);
 
-                await Task.Delay(delay);
-                continue;
+                // disconnected, or a manual reconnect took over
+                if (!await TryDelayAsync(delay, ct))
+                    return true;
             }
         }
 
         return false;
     }
 
-    private async Task HandleErrorAndAttemptToReconnectAsync(TransportFrame frame)
+    /// <summary>
+    /// Reads the HELLO payload that opens a connection. A failed read throws to the caller's retry loop rather than
+    /// being handled like a dropped connection, which would start a reconnect inside this one.
+    /// </summary>
+    private async Task<GatewayHello> ReadHelloAsync(CancellationToken ct)
+    {
+        TransportFrame frame = await this.transportService.ReadAsync(ct);
+
+        if (frame.TryGetException(out Exception? exception))
+            throw new InvalidDataException("Failed to read the HELLO payload from Discord.", exception);
+
+        if (frame.TryGetErrorCode(out int errorCode))
+            throw new InvalidDataException($"The gateway closed with code {errorCode} instead of sending HELLO.");
+
+        GatewayPayload? helloEvent = await ProcessAndDeserializeTransportFrameAsync(frame, ct);
+
+        if (helloEvent is not { OpCode: GatewayOpCode.Hello })
+            throw new InvalidDataException("Expected HELLO payload from Discord");
+
+        return ((JObject)helloEvent.Data).ToDiscordObject<GatewayHello>();
+    }
+
+    /// <summary>
+    /// Stops the current connection's read loop and heartbeat, and returns the token for the connection replacing it.
+    /// </summary>
+    private CancellationToken StartConnection()
+    {
+        lock (this.connectionLock)
+        {
+            // replaced before cancelling, so anything the cancellation runs inline already sees the new connection
+            CancellationTokenSource previous = this.gatewayTokenSource;
+            this.gatewayTokenSource = new();
+
+            if (previous is not null)
+                previous.Cancel();
+
+            return this.gatewayTokenSource.Token;
+        }
+    }
+
+    /// <summary>
+    /// Stops the current connection's read loop, including a read in progress, and its heartbeat.
+    /// </summary>
+    private void StopConnection()
+    {
+        lock (this.connectionLock)
+        {
+            if (this.gatewayTokenSource is not null)
+                this.gatewayTokenSource.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// Stops the connection that <paramref name="requester"/> belongs to. Returns false when a reconnect or
+    /// disconnect already stopped or replaced it, leaving nothing for the requester to do.
+    /// </summary>
+    private bool TryStopConnection(CancellationToken requester)
+    {
+        lock (this.connectionLock)
+        {
+            if (requester.IsCancellationRequested || !IsCurrentConnection(requester))
+                return false;
+
+            this.gatewayTokenSource.Cancel();
+            return true;
+        }
+    }
+
+    private bool IsCurrentConnection(CancellationToken token)
+    {
+        lock (this.connectionLock)
+        {
+            return token == this.gatewayTokenSource.Token;
+        }
+    }
+
+    /// <summary>
+    /// Waits before the next connection attempt. Returns false if the connection was stopped meanwhile.
+    /// </summary>
+    private static async Task<bool> TryDelayAsync(TimeSpan delay, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(delay, ct);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private async Task HandleErrorAndAttemptToReconnectAsync(TransportFrame frame, CancellationToken ct)
     {
         if(this.closureRequested)
         {
@@ -567,11 +767,11 @@ public sealed class GatewayClient : IGatewayClient
 
         if (frame.TryGetException<WebSocketException>(out _))
         {
-            await TryResumeAsync();
+            await TryResumeAsync(ct);
         }
         else if (frame.TryGetException(out _) && this.options.AutoReconnect)
         {
-            await TryReconnectAsync();
+            await TryReconnectAsync(ct);
         }
         else if (frame.TryGetErrorCode(out int errorCode))
         {
@@ -579,11 +779,11 @@ public sealed class GatewayClient : IGatewayClient
             
             bool success = errorCode switch
             {
-                < 4000 => await HandleSystemErrorAsync(errorCode),
-                (>= 4000 and <= 4002) or 4005 or 4008 => await TryResumeAsync(),
-                4003 or 4007 or 4009 => this.options.AutoReconnect && await TryReconnectAsync(),
+                < 4000 => await HandleSystemErrorAsync(errorCode, ct),
+                (>= 4000 and <= 4002) or 4005 or 4008 => await TryResumeAsync(ct),
+                4003 or 4007 or 4009 => this.options.AutoReconnect && await TryReconnectAsync(ct),
                 4004 or (>= 4010 and <= 4014) => false,
-                _ => this.options.AutoReconnect && await TryReconnectAsync()
+                _ => this.options.AutoReconnect && await TryReconnectAsync(ct)
             };
 
             if (!success)
@@ -594,13 +794,13 @@ public sealed class GatewayClient : IGatewayClient
         }
     }
 
-    private async ValueTask<GatewayPayload?> ProcessAndDeserializeTransportFrameAsync(TransportFrame frame)
+    private async ValueTask<GatewayPayload?> ProcessAndDeserializeTransportFrameAsync(TransportFrame frame, CancellationToken ct)
     {
         GatewayPayload? payload;
 
         if (!frame.IsSuccess)
         {
-            await HandleErrorAndAttemptToReconnectAsync(frame);
+            await HandleErrorAndAttemptToReconnectAsync(frame, ct);
             return null;
         }
 
@@ -658,7 +858,7 @@ public sealed class GatewayClient : IGatewayClient
         return payload;
     }
 
-    private async Task<bool> HandleSystemErrorAsync(int errorCode)
+    private async Task<bool> HandleSystemErrorAsync(int errorCode, CancellationToken ct)
     {
         // 3000 Unauthorized and 3003 Forbidden are a problem we can't fix, error and return to the user
         if (errorCode is 3000 or 3003)
@@ -669,7 +869,7 @@ public sealed class GatewayClient : IGatewayClient
         // else, try to reconnect if so requested
         if (this.options.AutoReconnect && !this.closureRequested)
         {
-            return await TryReconnectAsync();
+            return await TryReconnectAsync(ct);
         }
 
         this.logger.LogDebug("Gateway shutdown in progress, not reconnecting on recoverable close code {CloseCode}", errorCode);
@@ -680,7 +880,20 @@ public sealed class GatewayClient : IGatewayClient
     public async ValueTask ReconnectAsync()
     {
         this.closureRequested = false; // Manual reconnect, so we're not closing
-        _ = await TryReconnectAsync();
+
+        // stops a read in progress, so the read loop lets go of the transport, and ends a reconnect's retries
+        StopConnection();
+
+        await this.transportLock.WaitAsync();
+
+        try
+        {
+            _ = await ReconnectCoreAsync();
+        }
+        finally
+        {
+            this.transportLock.Release();
+        }
     }
 
     private Type GetEventArgsType(string eventName)

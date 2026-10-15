@@ -38,7 +38,8 @@ internal readonly struct ZlibWrapper : IDisposable, IEquatable<ZlibWrapper>
 
             while (true)
             {
-                int read = this.stream.Read(decompressed.GetSpan());
+                Span<byte> bytes = decompressed.GetSpan();
+                int read = this.stream.Read(bytes);
 
                 if (read == 0)
                 {
@@ -57,6 +58,7 @@ internal readonly struct ZlibWrapper : IDisposable, IEquatable<ZlibWrapper>
         finally
         {
             this.underlying.SetLength(0);
+            this.underlying.Position = 0;
         }
     }
 
